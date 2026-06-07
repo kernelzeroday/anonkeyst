@@ -285,19 +285,28 @@ fn launch_claude(api_key: &str, model: &str, extra_args: &[String]) -> Result<()
 
     eprintln!("proxy ready, launching claude...");
 
-    let mut claude = Command::new(&claude_bin)
-        .arg("--bare")
-        .args(extra_args)
-        .env("ANTHROPIC_BASE_URL", &proxy_url)
-        .env("ANTHROPIC_API_KEY", "sk-ant-anonkey-proxy-000000000000000000000000000000000000000000000000")
-        .env_remove("ANTHROPIC_AUTH_TOKEN")
-        .env_remove("OPENAI_API_KEY")
-        .env_remove("OPENAI_BASE_URL")
-        .env_remove("DISABLE_PROMPT_CACHING")
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()?;
+    let mut claude_cmd = Command::new(&claude_bin);
+    claude_cmd.arg("--bare");
+    claude_cmd.args(extra_args);
+    claude_cmd.env("ANTHROPIC_BASE_URL", &proxy_url);
+    claude_cmd.env("ANTHROPIC_API_KEY", "sk-ant-anonkey-proxy-000000000000000000000000000000000000000000000000");
+    // Strip all conflicting env vars
+    for key in std::env::vars().filter_map(|(k, _)| {
+        if k.starts_with("ANTHROPIC_") || k.starts_with("CLAUDE") || k.starts_with("OPENAI_") || k == "AI_AGENT" {
+            Some(k)
+        } else {
+            None
+        }
+    }).collect::<Vec<_>>() {
+        claude_cmd.env_remove(&key);
+    }
+    // Re-set the ones we need after clearing
+    claude_cmd.env("ANTHROPIC_BASE_URL", &proxy_url);
+    claude_cmd.env("ANTHROPIC_API_KEY", "sk-ant-anonkey-proxy-000000000000000000000000000000000000000000000000");
+    claude_cmd.stdin(Stdio::inherit());
+    claude_cmd.stdout(Stdio::inherit());
+    claude_cmd.stderr(Stdio::inherit());
+    let mut claude = claude_cmd.spawn()?;
 
     let status = claude.wait()?;
     drop(guard);
