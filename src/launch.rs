@@ -276,6 +276,7 @@ fn launch_claude(api_key: &str, model: &str, extra_args: &[String]) -> Result<()
     eprintln!("litellm ready, launching claude...");
 
     let mut claude = Command::new(&claude_bin)
+        .arg("--bare")
         .args(extra_args)
         .env("ANTHROPIC_BASE_URL", &proxy_url)
         .env("ANTHROPIC_API_KEY", "sk-litellm")
