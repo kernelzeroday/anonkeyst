@@ -57,7 +57,7 @@ Launch coding tools pre-configured to route through anonkey.st:
 # Launch OpenAI Codex CLI
 anonkeyst launch codex
 
-# Launch Claude Code (via litellm translation proxy)
+# Launch Claude Code (via Anthropic→OpenAI translation proxy)
 anonkeyst launch claude
 
 # Launch Aider
@@ -75,7 +75,7 @@ anonkeyst launch codex -- exec "say hello"
 | Tool | Method | Requirements |
 |------|--------|-------------|
 | `codex` | Embedded Python proxy (strips hosted tools, converts SSE) | `python3`, `codex` |
-| `claude` | LiteLLM proxy (Anthropic→OpenAI translation) | `litellm`, `claude` |
+| `claude` | Embedded Python proxy (Anthropic Messages→OpenAI Chat translation) | `python3`, `claude` |
 | `aider` | Direct (OpenAI-compatible natively) | `aider` |
 | `goose` | Direct (OpenAI provider env vars) | `goose` |
 | `opencode` | Direct (config via env var) | `opencode` |
@@ -90,7 +90,7 @@ anonkeyst launch codex -- exec "say hello"
 2. The proxy strips these tools and converts non-streaming JSON responses into the SSE event stream codex expects
 3. Auth is temporarily swapped to `apikey` mode (restored on exit)
 
-**Claude**: Requires LiteLLM because Claude Code speaks the Anthropic Messages API, not OpenAI. LiteLLM translates between formats. Launched with `--bare` to skip stored OAuth and use only the API key env var.
+**Claude**: Embedded Python proxy translates Anthropic Messages API → OpenAI Chat Completions, including tool use conversion and SSE streaming. Launched with `--bare` to skip stored OAuth and use only the API key env var. No external dependencies beyond `python3`.
 
 ### Models
 
@@ -117,5 +117,4 @@ Default for `fund` is XMR (Monero) — credited after 1 confirmation (~2-5 minut
 
 ## Dependencies
 
-- `python3` — required for `launch codex` (embedded proxy)
-- `litellm` — required for `launch claude` (`uv tool install 'litellm[proxy]'`)
+- `python3` — required for `launch codex` and `launch claude` (embedded translation proxies)

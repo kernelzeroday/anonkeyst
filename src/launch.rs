@@ -1,5 +1,4 @@
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::io::{BufRead, BufReader};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -140,9 +139,9 @@ fn launch_codex(api_key: &str, model: &str, extra_args: &[String]) -> Result<(),
         .stderr(Stdio::piped())
         .spawn()?;
 
-    let mut guard = LitellmGuard {
+    let mut guard = ProxyGuard {
         child: Some(proxy),
-        config_path: proxy_script.to_string_lossy().to_string(),
+        script_path: proxy_script.to_string_lossy().to_string(),
     };
 
     LITELLM_PID.store(guard.child.as_ref().unwrap().id(), Ordering::Relaxed);
@@ -206,80 +205,91 @@ fn launch_codex(api_key: &str, model: &str, extra_args: &[String]) -> Result<(),
     Ok(())
 }
 
-fn find_litellm_cmd() -> Result<(String, Vec<String>), Box<dyn std::error::Error>> {
-    for name in &["litellm"] {
-        if let Ok(path) = which::which(name) {
-            return Ok((path.to_string_lossy().to_string(), vec![]));
-        }
-    }
-    if let Ok(uvx) = which::which("uvx") {
-        return Ok((uvx.to_string_lossy().to_string(), vec!["litellm[proxy]".to_string()]));
-    }
-    Err("'litellm' not found. Install with: uv tool install 'litellm[proxy]'".into())
-}
+const CLAUDE_PROXY_SCRIPT: &str = include_str!("claude_proxy.py");
 
-struct LitellmGuard {
+struct ProxyGuard {
     child: Option<std::process::Child>,
-    config_path: String,
+    script_path: String,
 }
 
-impl Drop for LitellmGuard {
+impl Drop for ProxyGuard {
     fn drop(&mut self) {
         if let Some(ref mut child) = self.child {
             child.kill().ok();
             child.wait().ok();
         }
-        std::fs::remove_file(&self.config_path).ok();
+        std::fs::remove_file(&self.script_path).ok();
     }
 }
 
 fn launch_claude(api_key: &str, model: &str, extra_args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
-    let (litellm_bin, litellm_prefix_args) = find_litellm_cmd()?;
     let claude_bin = find_binary(&["claude"])?;
+    find_binary(&["python3"])?;
 
     let port = find_free_port()?;
     let proxy_url = format!("http://127.0.0.1:{}", port);
 
-    let config = write_litellm_config(api_key, model)?;
+    let proxy_dir = std::env::temp_dir().join("anonkeyst");
+    std::fs::create_dir_all(&proxy_dir)?;
+    let proxy_script = proxy_dir.join(format!("claude_proxy_{}.py", std::process::id()));
+    std::fs::write(&proxy_script, CLAUDE_PROXY_SCRIPT)?;
 
-    eprintln!("starting litellm proxy on port {}...", port);
+    eprintln!("starting anthropic proxy on port {}...", port);
 
-    let mut litellm_args = litellm_prefix_args;
-    litellm_args.extend([
-        "--config".to_string(),
-        config.clone(),
-        "--port".to_string(),
-        port.to_string(),
-        "--host".to_string(),
-        "127.0.0.1".to_string(),
-    ]);
-
-    let litellm = Command::new(&litellm_bin)
-        .args(&litellm_args)
+    let proxy = Command::new("python3")
+        .arg(&proxy_script)
+        .env("ANONKEY_API_KEY", api_key)
+        .env("ANONKEY_MODEL", model)
+        .env("ANONKEY_PROXY_PORT", port.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
 
-    let mut guard = LitellmGuard {
-        child: Some(litellm),
-        config_path: config,
+    let mut guard = ProxyGuard {
+        child: Some(proxy),
+        script_path: proxy_script.to_string_lossy().to_string(),
     };
 
     LITELLM_PID.store(guard.child.as_ref().unwrap().id(), Ordering::Relaxed);
     install_cleanup_handler();
 
-    let ready = wait_for_litellm(guard.child.as_mut().unwrap(), port);
+    // Wait for proxy ready
+    let start = Instant::now();
+    let timeout = Duration::from_secs(10);
+    let mut ready = false;
+    if let Some(stderr) = guard.child.as_mut().unwrap().stderr.take() {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines() {
+            if start.elapsed() > timeout { break; }
+            if let Ok(line) = line {
+                if line.contains("ready on port") {
+                    ready = true;
+                    break;
+                }
+            }
+        }
+    }
     if !ready {
-        return Err("litellm proxy failed to start. Install with: uv tool install 'litellm[proxy]'".into());
+        let poll_start = Instant::now();
+        while poll_start.elapsed() < Duration::from_secs(5) {
+            if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() {
+                ready = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    if !ready {
+        return Err("claude proxy failed to start (requires python3)".into());
     }
 
-    eprintln!("litellm ready, launching claude...");
+    eprintln!("proxy ready, launching claude...");
 
     let mut claude = Command::new(&claude_bin)
         .arg("--bare")
         .args(extra_args)
         .env("ANTHROPIC_BASE_URL", &proxy_url)
-        .env("ANTHROPIC_API_KEY", "sk-litellm")
+        .env("ANTHROPIC_API_KEY", "sk-anonkey-proxy")
         .env_remove("ANTHROPIC_AUTH_TOKEN")
         .env_remove("OPENAI_API_KEY")
         .env_remove("OPENAI_BASE_URL")
@@ -298,63 +308,6 @@ fn launch_claude(api_key: &str, model: &str, extra_args: &[String]) -> Result<()
     Ok(())
 }
 
-fn write_litellm_config(api_key: &str, model: &str) -> Result<String, Box<dyn std::error::Error>> {
-    let dir = std::env::temp_dir().join("anonkeyst");
-    std::fs::create_dir_all(&dir)?;
-    let filename = format!("litellm-{}.yaml", std::process::id());
-    let path = dir.join(filename);
-
-    let config = format!(
-r#"model_list:
-  - model_name: "claude-sonnet-4-20250514"
-    litellm_params:
-      model: openai/{model}
-      api_key: "{api_key}"
-      api_base: "{BASE_URL}"
-  - model_name: "claude-opus-4-20250514"
-    litellm_params:
-      model: openai/{model}
-      api_key: "{api_key}"
-      api_base: "{BASE_URL}"
-  - model_name: "claude-haiku-4-20250514"
-    litellm_params:
-      model: openai/{model}
-      api_key: "{api_key}"
-      api_base: "{BASE_URL}"
-  - model_name: "anthropic/*"
-    litellm_params:
-      model: openai/{model}
-      api_key: "{api_key}"
-      api_base: "{BASE_URL}"
-  - model_name: "*"
-    litellm_params:
-      model: openai/{model}
-      api_key: "{api_key}"
-      api_base: "{BASE_URL}"
-
-general_settings:
-  master_key: "sk-litellm"
-  drop_params: true
-
-litellm_settings:
-  drop_params: true
-  modify_params: true
-"#,
-        model = model,
-        api_key = api_key,
-        BASE_URL = BASE_URL,
-    );
-
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&path)?;
-    file.write_all(config.as_bytes())?;
-    Ok(path.to_string_lossy().to_string())
-}
-
 fn find_free_port() -> Result<u16, Box<dyn std::error::Error>> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
     let port = listener.local_addr()?.port();
@@ -362,80 +315,6 @@ fn find_free_port() -> Result<u16, Box<dyn std::error::Error>> {
     Ok(port)
 }
 
-fn wait_for_litellm(child: &mut std::process::Child, port: u16) -> bool {
-    let stderr = child.stderr.take();
-    let stdout = child.stdout.take();
-    let start = Instant::now();
-    let timeout = Duration::from_secs(30);
-
-    let check_lines = |reader: BufReader<Box<dyn std::io::Read + Send>>| -> bool {
-        for line in reader.lines() {
-            if start.elapsed() > timeout {
-                return false;
-            }
-            match line {
-                Ok(line) => {
-                    if line.contains("Uvicorn running") || line.contains("Application startup complete") || line.contains("LiteLLM Proxy started") {
-                        return true;
-                    }
-                    if line.contains("ERROR") {
-                        eprintln!("  litellm: {}", line);
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-        false
-    };
-
-    // Merge stdout and stderr into one stream to check
-    if let Some(stderr) = stderr {
-        if let Some(stdout) = stdout {
-            // Spawn a thread to read stdout, check stderr on main
-            let start_clone = start;
-            let handle = std::thread::spawn(move || {
-                let reader = BufReader::new(stdout);
-                for line in reader.lines() {
-                    if start_clone.elapsed() > Duration::from_secs(30) {
-                        return false;
-                    }
-                    match line {
-                        Ok(line) => {
-                            if line.contains("Uvicorn running") || line.contains("Application startup complete") || line.contains("LiteLLM Proxy started") {
-                                return true;
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-                false
-            });
-
-            let reader = BufReader::new(Box::new(stderr) as Box<dyn std::io::Read + Send>);
-            if check_lines(reader) {
-                return true;
-            }
-            if let Ok(true) = handle.join() {
-                return true;
-            }
-        } else {
-            let reader = BufReader::new(Box::new(stderr) as Box<dyn std::io::Read + Send>);
-            if check_lines(reader) {
-                return true;
-            }
-        }
-    }
-
-    // fallback: poll the port
-    let poll_start = Instant::now();
-    while poll_start.elapsed() < Duration::from_secs(10) {
-        if std::net::TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    false
-}
 
 fn launch_aider(api_key: &str, model: &str, extra_args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let bin = find_binary(&["aider"])?;
