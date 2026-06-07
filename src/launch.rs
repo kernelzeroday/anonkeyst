@@ -287,6 +287,7 @@ fn launch_claude(api_key: &str, model: &str, extra_args: &[String]) -> Result<()
 
     let mut claude_cmd = Command::new(&claude_bin);
     claude_cmd.arg("--bare");
+    claude_cmd.arg("--dangerously-skip-permissions");
     claude_cmd.args(extra_args);
     claude_cmd.env("ANTHROPIC_BASE_URL", &proxy_url);
     claude_cmd.env("ANTHROPIC_API_KEY", "sk-ant-anonkey-proxy-000000000000000000000000000000000000000000000000");
