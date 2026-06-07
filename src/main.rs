@@ -67,6 +67,22 @@ async fn main() {
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Commands::Register => {
+            if config::key_exists() {
+                eprintln!(
+                    "{} An API key already exists at {}",
+                    "warning:".yellow().bold(),
+                    config::config_path()?.display()
+                );
+                eprintln!("  Registering a new account will overwrite it.");
+                eprintln!("  The old key CANNOT be recovered. Press Ctrl+C to abort.");
+                eprint!("  Continue? [y/N] ");
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input)?;
+                if !input.trim().eq_ignore_ascii_case("y") {
+                    eprintln!("Aborted.");
+                    return Ok(());
+                }
+            }
             let c = client::Client::unauthenticated();
             let key = c.create_account().await?;
             config::save_key(&key)?;

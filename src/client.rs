@@ -1,5 +1,6 @@
 use reqwest::header::{AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 const BASE_URL: &str = "https://anonkey.st/v1";
 
@@ -33,7 +34,6 @@ pub struct Client {
 struct AccountResponse {
     api_key: String,
 }
-
 
 #[derive(Deserialize)]
 struct ModelsResponse {
@@ -91,20 +91,28 @@ struct Choice {
 
 #[derive(Deserialize)]
 struct ResponseMessage {
-    content: String,
+    content: Option<String>,
+}
+
+fn build_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(120))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
 }
 
 impl Client {
     pub fn new(api_key: &str) -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: build_http_client(),
             api_key: Some(api_key.to_string()),
         }
     }
 
     pub fn unauthenticated() -> Self {
         Self {
-            http: reqwest::Client::new(),
+            http: build_http_client(),
             api_key: None,
         }
     }
@@ -255,7 +263,7 @@ impl Client {
         let content = data
             .choices
             .first()
-            .map(|c| c.message.content.clone())
+            .and_then(|c| c.message.content.clone())
             .unwrap_or_else(|| "(no response)".to_string());
         Ok(content)
     }
