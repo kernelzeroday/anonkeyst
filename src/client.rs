@@ -17,6 +17,13 @@ fn api_error(status: reqwest::StatusCode, body: &str) -> String {
     format!("request failed (HTTP {}): {}", status.as_u16(), body)
 }
 
+pub struct BalanceInfo {
+    pub balance_usd: f64,
+    pub total_spent_usd: f64,
+    pub total_saved_usd: f64,
+    pub key_prefix: String,
+}
+
 pub struct Client {
     http: reqwest::Client,
     api_key: Option<String>,
@@ -126,7 +133,7 @@ impl Client {
         Ok(data.api_key)
     }
 
-    pub async fn get_balance(&self) -> Result<String, Box<dyn std::error::Error>> {
+    pub async fn get_balance(&self) -> Result<BalanceInfo, Box<dyn std::error::Error>> {
         let resp = self
             .http
             .get(format!("{}/balance", BASE_URL))
@@ -140,21 +147,13 @@ impl Client {
             return Err(api_error(status, &body).into());
         }
 
-        let text = resp.text().await?;
-        let json: serde_json::Value = serde_json::from_str(&text)
-            .map_err(|_| format!("unexpected response: {}", text))?;
-
-        let balance = if let Some(b) = json.get("balance") {
-            match b {
-                serde_json::Value::String(s) => s.clone(),
-                serde_json::Value::Number(n) => n.to_string(),
-                other => other.to_string(),
-            }
-        } else {
-            json.to_string()
-        };
-
-        Ok(balance)
+        let json: serde_json::Value = resp.json().await?;
+        Ok(BalanceInfo {
+            balance_usd: json.get("balance_usd").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            total_spent_usd: json.get("total_spent_usd").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            total_saved_usd: json.get("total_saved_compared_to_openrouter_usd").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            key_prefix: json.get("key_prefix").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        })
     }
 
     pub async fn list_models(&self) -> Result<Vec<String>, Box<dyn std::error::Error>> {

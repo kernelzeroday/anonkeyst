@@ -1,5 +1,6 @@
 mod client;
 mod config;
+mod launch;
 
 use clap::{Parser, Subcommand};
 use colored::Colorize;
@@ -40,6 +41,17 @@ enum Commands {
         /// The message to send
         message: String,
     },
+    /// Launch an AI tool pre-configured to use anonkey.st
+    Launch {
+        /// Tool to launch: codex, claude, aider, goose, opencode, copilot
+        tool: String,
+        /// Model to use
+        #[arg(short, long, default_value = "gpt-5.5")]
+        model: String,
+        /// Extra arguments passed to the tool
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
 }
 
 #[tokio::main]
@@ -68,8 +80,11 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Commands::Balance => {
             let c = authenticated_client()?;
-            let balance = c.get_balance().await?;
-            println!("{} {}", "Balance:".bold(), balance);
+            let b = c.get_balance().await?;
+            println!("  {} ${:.4}", "Balance:".bold(), b.balance_usd);
+            println!("  {} ${:.4}", "Spent:".bold(), b.total_spent_usd);
+            println!("  {} ${:.4}", "Saved:".bold(), b.total_saved_usd);
+            println!("  {} {}", "Key:".bold(), b.key_prefix);
         }
         Commands::Models => {
             let c = authenticated_client()?;
@@ -98,6 +113,16 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             let c = authenticated_client()?;
             let reply = c.chat(&model, &message).await?;
             println!("{}", reply);
+        }
+        Commands::Launch { tool, model, args } => {
+            let key = config::load_key()?;
+            println!(
+                "{} Launching {} with model {}",
+                "→".bright_cyan().bold(),
+                tool.bright_green(),
+                model.bright_yellow()
+            );
+            launch::run(&tool, &key, &model, &args)?;
         }
     }
     Ok(())
